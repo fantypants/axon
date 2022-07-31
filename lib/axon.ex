@@ -490,7 +490,7 @@ defmodule Axon do
   def container(container, opts \\ []) do
     opts = Keyword.validate!(opts, [:name])
 
-    layer(:container, [container], name: opts[:name], op_name: :container)
+    layer(:container, [container], name: opts[:name], op_name: :container, container: container)
   end
 
   # TODO: This should not be duplicated
@@ -610,6 +610,122 @@ defmodule Axon do
       node
     end
   end
+
+  @doc """
+  Adds a bidirectional layer to the network.
+
+  The bidirectionals layer implements:
+
+      merged = merge_fn
+
+  where `layer_fn` is the appropriate layer function to implement.
+
+  where `merge_fn` is given by the `:merge` option and both
+  `forward cells` and `backwards cells` are layer parameters.
+
+  .
+
+  Compiles to `Axon.Layers.bidirectional/3`.
+
+  ## Options
+
+    * `:merge` - merge function.
+  """
+  @doc type: :bidirectional
+  def bidirectional(%Axon{} = input, layer_fn, opts \\ [] ) do
+      opts = Keyword.validate!(opts, [:name, merge: &Axon.concatenate/2])
+
+      forward_input = input
+      backward_input = Axon.nx(input, &Nx.reverse(&1), op_name: :reverse)
+
+      forward_result = layer_fn.(forward_input)
+      backward_result = layer_fn.(backward_input)
+
+
+      {out_state, out_seq} = deep_merge(forward_result, backward_result, opts[:merge])
+      out_seq
+  end
+
+
+  defp deep_merge(left, right, fun) do
+  case Nx.Container.traverse(left, leaves(right), &recur_merge(&1, &2, fun)) do
+    {merged, []} ->
+      merged
+
+    {_merged, _leftover} ->
+      raise ArgumentError,
+            "unable to merge arguments with incompatible" <>
+              " structure"
+  end
+end
+
+defp leaves(container) do
+  container
+  |> Nx.Container.reduce([], fn x, acc -> [x | acc] end)
+  |> Enum.reverse()
+end
+
+defp recur_merge(left, [right | right_leaves], fun) do
+  case {left, right} do
+    {%Nx.Tensor{} = left, %Nx.Tensor{} = right} ->
+      {fun.(left, right), right_leaves}
+
+    {%Axon{} = left, %Axon{} = right} ->
+      {fun.(left, right), right_leaves}
+
+    {left, right} ->
+      {deep_merge(left, right, fun), right_leaves}
+  end
+end
+
+
+
+
+
+  def bidirectional_old(
+        %Axon{} = input,
+        layer_fn,
+        opts \\ []
+      )
+       do
+    opts = Keyword.validate!(opts, [:name, merge: &Axon.concatenate/2, fn_args: []])
+    [fn_args: layer_fn_args, merge: merge_fn] = opts
+
+    input
+    |> then(fn x ->
+      # Forward Pass Input Layer
+      f_p =
+      x
+      |> Axon.nx(fn tensor ->
+        tensor
+      end)
+
+      # Backward Pass Input Layermix deps.get
+      b_p =
+      x
+      |> Axon.nx(fn tensor ->
+        Nx.reverse(tensor) # Reverse the tensor
+      end)
+
+      forward =
+        apply(layer_fn, [f_p | layer_fn_args])
+        |> then(fn {{new_cell, new_hidden} = t, out} ->
+          out # Resultant Forward LSTM output
+        end) # How do we handle this cleanup or reshape here?
+
+      backward =
+        apply(layer_fn, [b_p | layer_fn_args])
+        |> then(fn {{new_cell, new_hidden} = t, out} ->
+         out # Resultant Backward LSTM output
+        end)
+
+       apply(merge_fn, [forward, backward])
+
+    end)
+
+  end
+  # END DELETE
+
 
   @doc """
   Adds a bilinear layer to the network.
